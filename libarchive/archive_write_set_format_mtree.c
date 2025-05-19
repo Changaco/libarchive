@@ -80,7 +80,6 @@ struct dir_info {
  * The Data only for a regular file.
  */
 struct reg_info {
-	int compute_sum;
 	uint32_t crc;
 	uint_least32_t mset_digest;
 	struct ae_digest digest;
@@ -147,7 +146,6 @@ struct mtree_writer {
 	int depth;
 
 	/* check sum */
-	int compute_sum;
 	uint32_t crc;
 	uint64_t crc_len;
 #ifdef ARCHIVE_HAS_MD5
@@ -244,7 +242,7 @@ static int mtree_entry_tree_add(struct archive_write *, struct mtree_entry **);
 static void sum_init(struct mtree_writer *);
 static void sum_update(struct mtree_writer *, const void *, size_t);
 static void sum_final(struct mtree_writer *, struct reg_info *);
-static void sum_write(struct archive_string *, struct reg_info *);
+static void sum_write(struct archive_string *, struct reg_info *, struct mtree_writer *mtree);
 static int write_mtree_entry(struct archive_write *, struct mtree_entry *);
 static int write_dot_dot_entry(struct archive_write *, struct mtree_entry *);
 
@@ -841,7 +839,6 @@ mtree_entry_new(struct archive_write *a, struct archive_entry *entry,
 			*m_entry = NULL;
 			return (ARCHIVE_FATAL);
 		}
-		me->reg_info->compute_sum = 0;
 	}
 
 	*m_entry = me;
@@ -864,47 +861,33 @@ mtree_entry_free(struct mtree_entry *me)
 }
 
 static void
-mtree_copy_ae_digests(struct reg_info *reg, struct archive_entry *entry, int compute_sum)
+mtree_copy_ae_digests(struct reg_info *reg, struct archive_entry *entry)
 {
-	reg->compute_sum = compute_sum;
-	reg->mset_digest = entry->mset_digest;
-
-	if ((reg->compute_sum & F_MD5)
-		&& (reg->mset_digest & AE_MSET_DIGEST_MD5)) {
-
+	if (entry->mset_digest & AE_MSET_DIGEST_MD5) {
 		memcpy(&reg->digest.md5, entry->digest.md5,
 			sizeof(reg->digest.md5));
 	}
-	if ((reg->compute_sum & F_RMD160)
-		&& (reg->mset_digest & AE_MSET_DIGEST_RMD160)) {
-
+	if (entry->mset_digest & AE_MSET_DIGEST_RMD160) {
 		memcpy(&reg->digest.rmd160, entry->digest.rmd160,
 			sizeof(reg->digest.rmd160));
 	}
-	if ((reg->compute_sum & F_SHA1)
-		&& (reg->mset_digest & AE_MSET_DIGEST_SHA1)) {
-
+	if (entry->mset_digest & AE_MSET_DIGEST_SHA1) {
 		memcpy(&reg->digest.sha1, entry->digest.sha1,
 			sizeof(reg->digest.sha1));
 	}
-	if ((reg->compute_sum & F_SHA256)
-		&& (reg->mset_digest & AE_MSET_DIGEST_SHA256)) {
-
+	if (entry->mset_digest & AE_MSET_DIGEST_SHA256) {
 		memcpy(&reg->digest.sha256, entry->digest.sha256,
 			sizeof(reg->digest.sha256));
 	}
-	if ((reg->compute_sum & F_SHA384)
-		&& (reg->mset_digest & AE_MSET_DIGEST_SHA384)) {
-
+	if (entry->mset_digest & AE_MSET_DIGEST_SHA384) {
 		memcpy(&reg->digest.sha384, entry->digest.sha384,
 			sizeof(reg->digest.sha384));
 	}
-	if ((reg->compute_sum & F_SHA512)
-		&& (reg->mset_digest & AE_MSET_DIGEST_SHA512)) {
-
+	if (entry->mset_digest & AE_MSET_DIGEST_SHA512) {
 		memcpy(&reg->digest.sha512, entry->digest.sha512,
 			sizeof(reg->digest.sha512));
 	}
+	reg->mset_digest = entry->mset_digest;
 }
 
 static int
@@ -945,7 +928,7 @@ archive_write_mtree_header(struct archive_write *a,
 		sum_init(mtree);
 		/* honor archive_entry_set_digest() calls. These values will be
 		 * overwritten if archive_write_mtree_data() is called */
-		mtree_copy_ae_digests(mtree_entry->reg_info, entry, mtree->compute_sum);
+		mtree_copy_ae_digests(mtree_entry->reg_info, entry);
 	}
 
 	return (r2);
@@ -1086,7 +1069,7 @@ write_mtree_entry(struct archive_write *a, struct mtree_entry *me)
 
 	/* Write a bunch of sum. */
 	if (me->reg_info)
-		sum_write(str, me->reg_info);
+		sum_write(str, me->reg_info, mtree);
 
 	archive_strappend_char(str, '\n');
 	if (mtree->indent || mtree->classic)
@@ -1493,58 +1476,43 @@ static void
 sum_init(struct mtree_writer *mtree)
 {
 
-	mtree->compute_sum = 0;
-
 	if (mtree->keys & F_CKSUM) {
-		mtree->compute_sum |= F_CKSUM;
 		mtree->crc = 0;
 		mtree->crc_len = 0;
 	}
 #ifdef ARCHIVE_HAS_MD5
 	if (mtree->keys & F_MD5) {
-		if (archive_md5_init(&mtree->md5ctx) == ARCHIVE_OK)
-			mtree->compute_sum |= F_MD5;
-		else
+		if (archive_md5_init(&mtree->md5ctx) != ARCHIVE_OK)
 			mtree->keys &= ~F_MD5;/* Not supported. */
 	}
 #endif
 #ifdef ARCHIVE_HAS_RMD160
 	if (mtree->keys & F_RMD160) {
-		if (archive_rmd160_init(&mtree->rmd160ctx) == ARCHIVE_OK)
-			mtree->compute_sum |= F_RMD160;
-		else
+		if (archive_rmd160_init(&mtree->rmd160ctx) != ARCHIVE_OK)
 			mtree->keys &= ~F_RMD160;/* Not supported. */
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA1
 	if (mtree->keys & F_SHA1) {
-		if (archive_sha1_init(&mtree->sha1ctx) == ARCHIVE_OK)
-			mtree->compute_sum |= F_SHA1;
-		else
+		if (archive_sha1_init(&mtree->sha1ctx) != ARCHIVE_OK)
 			mtree->keys &= ~F_SHA1;/* Not supported. */
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA256
 	if (mtree->keys & F_SHA256) {
-		if (archive_sha256_init(&mtree->sha256ctx) == ARCHIVE_OK)
-			mtree->compute_sum |= F_SHA256;
-		else
+		if (archive_sha256_init(&mtree->sha256ctx) != ARCHIVE_OK)
 			mtree->keys &= ~F_SHA256;/* Not supported. */
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA384
 	if (mtree->keys & F_SHA384) {
-		if (archive_sha384_init(&mtree->sha384ctx) == ARCHIVE_OK)
-			mtree->compute_sum |= F_SHA384;
-		else
+		if (archive_sha384_init(&mtree->sha384ctx) != ARCHIVE_OK)
 			mtree->keys &= ~F_SHA384;/* Not supported. */
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA512
 	if (mtree->keys & F_SHA512) {
-		if (archive_sha512_init(&mtree->sha512ctx) == ARCHIVE_OK)
-			mtree->compute_sum |= F_SHA512;
-		else
+		if (archive_sha512_init(&mtree->sha512ctx) != ARCHIVE_OK)
 			mtree->keys &= ~F_SHA512;/* Not supported. */
 	}
 #endif
@@ -1553,7 +1521,7 @@ sum_init(struct mtree_writer *mtree)
 static void
 sum_update(struct mtree_writer *mtree, const void *buff, size_t n)
 {
-	if (mtree->compute_sum & F_CKSUM) {
+	if (mtree->keys & F_CKSUM) {
 		/*
 		 * Compute a POSIX 1003.2 checksum
 		 */
@@ -1565,45 +1533,33 @@ sum_update(struct mtree_writer *mtree, const void *buff, size_t n)
 		mtree->crc_len += n;
 	}
 #ifdef ARCHIVE_HAS_MD5
-	if (mtree->compute_sum & F_MD5) {
+	if (mtree->keys & F_MD5) {
 		archive_md5_update(&mtree->md5ctx, buff, n);
-		mtree->mtree_entry->reg_info->mset_digest &=
-			~AE_MSET_DIGEST_MD5;
 	}
 #endif
 #ifdef ARCHIVE_HAS_RMD160
-	if (mtree->compute_sum & F_RMD160) {
+	if (mtree->keys & F_RMD160) {
 		archive_rmd160_update(&mtree->rmd160ctx, buff, n);
-		mtree->mtree_entry->reg_info->mset_digest &=
-			~AE_MSET_DIGEST_RMD160;
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA1
-	if (mtree->compute_sum & F_SHA1) {
+	if (mtree->keys & F_SHA1) {
 		archive_sha1_update(&mtree->sha1ctx, buff, n);
-		mtree->mtree_entry->reg_info->mset_digest &=
-			~AE_MSET_DIGEST_SHA1;
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA256
-	if (mtree->compute_sum & F_SHA256) {
+	if (mtree->keys & F_SHA256) {
 		archive_sha256_update(&mtree->sha256ctx, buff, n);
-		mtree->mtree_entry->reg_info->mset_digest &=
-			~AE_MSET_DIGEST_SHA256;
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA384
-	if (mtree->compute_sum & F_SHA384) {
+	if (mtree->keys & F_SHA384) {
 		archive_sha384_update(&mtree->sha384ctx, buff, n);
-		mtree->mtree_entry->reg_info->mset_digest &=
-			~AE_MSET_DIGEST_SHA384;
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA512
-	if (mtree->compute_sum & F_SHA512) {
+	if (mtree->keys & F_SHA512) {
 		archive_sha512_update(&mtree->sha512ctx, buff, n);
-		mtree->mtree_entry->reg_info->mset_digest &=
-			~AE_MSET_DIGEST_SHA512;
 	}
 #endif
 }
@@ -1612,7 +1568,7 @@ static void
 sum_final(struct mtree_writer *mtree, struct reg_info *reg)
 {
 
-	if (mtree->compute_sum & F_CKSUM) {
+	if (mtree->keys & F_CKSUM) {
 		uint64_t len;
 		/* Include the length of the file. */
 		for (len = mtree->crc_len; len != 0; len >>= 8)
@@ -1620,43 +1576,53 @@ sum_final(struct mtree_writer *mtree, struct reg_info *reg)
 		reg->crc = ~mtree->crc;
 	}
 #ifdef ARCHIVE_HAS_MD5
-	if ((mtree->compute_sum & F_MD5)
-		&& !(reg->mset_digest & AE_MSET_DIGEST_MD5))
+	if ((mtree->keys & F_MD5)
+		&& !(reg->mset_digest & AE_MSET_DIGEST_MD5)) {
 
 		archive_md5_final(&mtree->md5ctx, reg->digest.md5);
+		reg->mset_digest |= AE_MSET_DIGEST_MD5;
+	}
 #endif
 #ifdef ARCHIVE_HAS_RMD160
-	if ((mtree->compute_sum & F_RMD160)
-		&& !(reg->mset_digest & AE_MSET_DIGEST_RMD160))
+	if ((mtree->keys & F_RMD160)
+		&& !(reg->mset_digest & AE_MSET_DIGEST_RMD160)) {
 
 		archive_rmd160_final(&mtree->rmd160ctx, reg->digest.rmd160);
+		reg->mset_digest |= AE_MSET_DIGEST_RMD160;
+	}
 #endif
 #ifdef ARCHIVE_HAS_SHA1
-	if ((mtree->compute_sum & F_SHA1)
-		&& !(reg->mset_digest & AE_MSET_DIGEST_SHA1))
+	if ((mtree->keys & F_SHA1)
+		&& !(reg->mset_digest & AE_MSET_DIGEST_SHA1)) {
 
 		archive_sha1_final(&mtree->sha1ctx, reg->digest.sha1);
+		reg->mset_digest |= AE_MSET_DIGEST_SHA1;
+	}
 #endif
 #ifdef ARCHIVE_HAS_SHA256
-	if ((mtree->compute_sum & F_SHA256)
-		&& !(reg->mset_digest & AE_MSET_DIGEST_SHA256))
+	if ((mtree->keys & F_SHA256)
+		&& !(reg->mset_digest & AE_MSET_DIGEST_SHA256)) {
 
 		archive_sha256_final(&mtree->sha256ctx, reg->digest.sha256);
+		reg->mset_digest |= AE_MSET_DIGEST_SHA256;
+	}
 #endif
 #ifdef ARCHIVE_HAS_SHA384
-	if ((mtree->compute_sum & F_SHA384)
-		&& !(reg->mset_digest & AE_MSET_DIGEST_SHA384))
+	if ((mtree->keys & F_SHA384)
+		&& !(reg->mset_digest & AE_MSET_DIGEST_SHA384)) {
 
 		archive_sha384_final(&mtree->sha384ctx, reg->digest.sha384);
+		reg->mset_digest |= AE_MSET_DIGEST_SHA384;
+	}
 #endif
 #ifdef ARCHIVE_HAS_SHA512
-	if ((mtree->compute_sum & F_SHA512)
-		&& !(reg->mset_digest & AE_MSET_DIGEST_SHA512))
+	if ((mtree->keys & F_SHA512)
+		&& !(reg->mset_digest & AE_MSET_DIGEST_SHA512)) {
 
 		archive_sha512_final(&mtree->sha512ctx, reg->digest.sha512);
+		reg->mset_digest |= AE_MSET_DIGEST_SHA512;
+	}
 #endif
-	/* Save what types of sum are computed. */
-	reg->compute_sum = mtree->compute_sum;
 }
 
 #if defined(ARCHIVE_HAS_MD5) || defined(ARCHIVE_HAS_RMD160) || \
@@ -1676,10 +1642,10 @@ strappend_bin(struct archive_string *s, const unsigned char *bin, int n)
 #endif
 
 static void
-sum_write(struct archive_string *str, struct reg_info *reg)
+sum_write(struct archive_string *str, struct reg_info *reg, struct mtree_writer *mtree)
 {
 
-	if (reg->compute_sum & F_CKSUM) {
+	if (mtree->keys & F_CKSUM) {
 		archive_string_sprintf(str, " cksum=%ju",
 		    (uintmax_t)reg->crc);
 	}
@@ -1688,37 +1654,37 @@ sum_write(struct archive_string *str, struct reg_info *reg)
 	strappend_bin(_s, _r->digest._t, sizeof(_r->digest._t))
 
 #ifdef ARCHIVE_HAS_MD5
-	if (reg->compute_sum & F_MD5) {
+	if (reg->mset_digest & AE_MSET_DIGEST_MD5) {
 		archive_strcat(str, " md5digest=");
 		append_digest(str, reg, md5);
 	}
 #endif
 #ifdef ARCHIVE_HAS_RMD160
-	if (reg->compute_sum & F_RMD160) {
+	if (reg->mset_digest & AE_MSET_DIGEST_RMD160) {
 		archive_strcat(str, " rmd160digest=");
 		append_digest(str, reg, rmd160);
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA1
-	if (reg->compute_sum & F_SHA1) {
+	if (reg->mset_digest & AE_MSET_DIGEST_SHA1) {
 		archive_strcat(str, " sha1digest=");
 		append_digest(str, reg, sha1);
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA256
-	if (reg->compute_sum & F_SHA256) {
+	if (reg->mset_digest & AE_MSET_DIGEST_SHA256) {
 		archive_strcat(str, " sha256digest=");
 		append_digest(str, reg, sha256);
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA384
-	if (reg->compute_sum & F_SHA384) {
+	if (reg->mset_digest & AE_MSET_DIGEST_SHA384) {
 		archive_strcat(str, " sha384digest=");
 		append_digest(str, reg, sha384);
 	}
 #endif
 #ifdef ARCHIVE_HAS_SHA512
-	if (reg->compute_sum & F_SHA512) {
+	if (reg->mset_digest & AE_MSET_DIGEST_SHA512) {
 		archive_strcat(str, " sha512digest=");
 		append_digest(str, reg, sha512);
 	}
